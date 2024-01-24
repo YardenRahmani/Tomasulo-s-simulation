@@ -1,11 +1,9 @@
 #define _CRT_SECURE_NO_WARNINGS
-#define MEM_SIZE 4096
-#define INSTRUCTION_LEN 8
-#define REG_COUNT 16
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "main.h"
 
 struct {
 	FILE *config_file;
@@ -16,45 +14,18 @@ struct {
 } files_handler;
 
 float regs[REG_COUNT];
+func_unit add_units;
+func_unit mul_units;
+func_unit div_units;
 
-struct {
-	int add_nr_units;
-	int add_nr_reserv;
-	int add_delay;
-	int mul_nr_units;
-	int mul_nr_reserv;
-	int mul_delay;
-	int div_nr_units;
-	int div_nr_reserv;
-	int div_delay;
-} func_units;
+void free_reserv_stations() {
 
-typedef struct inst_linked_list {
-	int pc;
-	int opcode;
-	int dst;
-	int src0;
-	int src1;
-	struct inst_linked_list* next;
-} inst_ll;
-
-inst_ll* new_inst_ll() {
-	inst_ll* new_inst = NULL;
-	new_inst = (inst_ll*)malloc(sizeof(inst_ll));
-	if (new_inst == NULL)
-		printf("New instruction allocation falied\n");
-	else {
-		new_inst->pc = -1;
-		new_inst->opcode = -1;
-		new_inst->dst = -1;
-		new_inst->src0 = -1;
-		new_inst->src1 = -1;
-		new_inst->next = NULL;
-	}
-	return new_inst;
+	free(add_units.reserv_stations);
+	free(mul_units.reserv_stations);
+	free(div_units.reserv_stations);
 }
 
-int get_args(int argc, char *argv[]) {
+int open_files(int argc, char* argv[]) {
 
 	if (argc != 6) {
 		printf("Wrong amount of arguments\n");
@@ -81,26 +52,47 @@ void close_files() {
 	fclose(files_handler.cdb_file);
 }
 
+reserv_station* set_reserv(int reserv_num) {
+	reserv_station* cur_reserv = (reserv_station*)malloc(reserv_num * sizeof(reserv_station));
+
+	if (cur_reserv != NULL) {
+		for (int i = 0; i < reserv_num; i++) {
+			cur_reserv[i].cur_inst = NULL;
+			cur_reserv[i].vj = -1;
+			cur_reserv[i].vk = -1;
+			cur_reserv[i].qj = NULL;
+			cur_reserv[i].qk = NULL;
+		}
+	}
+	return cur_reserv;
+}
+
 void set_unit(char* param_name, int param_val) {
-	//printf("i have value %d for param %s\n", param_val, param_name);
+	
 	if (strcmp(param_name, "add_nr_units") == 0)
-		func_units.add_nr_units = param_val;
+		add_units.nr_units = param_val;
 	else if (strcmp(param_name, "mul_nr_units") == 0)
-		func_units.mul_nr_units = param_val;
+		mul_units.nr_units = param_val;
 	else if (strcmp(param_name, "div_nr_units") == 0)
-		func_units.div_nr_units = param_val;
-	else if (strcmp(param_name, "add_nr_reserv") == 0)
-		func_units.add_nr_reserv = param_val;
-	else if (strcmp(param_name, "mul_nr_reserv") == 0)
-		func_units.mul_nr_reserv = param_val;
-	else if (strcmp(param_name, "div_nr_reserv") == 0)
-		func_units.div_nr_reserv = param_val;
+		div_units.nr_units = param_val;
+	else if (strcmp(param_name, "add_nr_reservation") == 0) {
+		add_units.nr_reserv = param_val;
+		add_units.reserv_stations = set_reserv(param_val);
+	}
+	else if (strcmp(param_name, "mul_nr_reservation") == 0) {
+		mul_units.nr_reserv = param_val;
+		mul_units.reserv_stations = set_reserv(param_val);
+	}
+	else if (strcmp(param_name, "div_nr_reservation") == 0) {
+		div_units.nr_reserv = param_val;
+		div_units.reserv_stations = set_reserv(param_val);
+	}
 	else if (strcmp(param_name, "add_delay") == 0)
-		func_units.add_delay = param_val;
+		add_units.delay = param_val;
 	else if (strcmp(param_name, "mul_delay") == 0)
-		func_units.mul_delay = param_val;
+		mul_units.delay = param_val;
 	else if (strcmp(param_name, "div_delay") == 0)
-		func_units.div_delay = param_val;
+		div_units.delay = param_val;
 	else
 		printf("no match for parameter %s in cfg.txt\n", param_name);
 }
@@ -110,7 +102,6 @@ char read_word(char** buffer, int size, FILE* read_origin) {
 	int read = 0;
 
 	while ((c = fgetc(read_origin)) != EOF && c != '\n' && c != ' ') {
-		printf("i read %c\n", c);
 		if (read_origin == files_handler.config_file && read == size - 1) {
 			size = 2 * size;
 			if (NULL == (*buffer = (char*)realloc(*buffer, size * sizeof(char)))) {
@@ -197,7 +188,7 @@ int get_reg(char reg_char) {
 inst_ll* set_memin() {
 	int pc_count;
 	char c = 0, * temp_inst;
-	inst_ll* head = NULL, * list_ptr = NULL, * prev_ptr;
+	inst_ll* head = NULL, * list_ptr = NULL;
 
 	for (pc_count = 0; pc_count < 4096; pc_count++) {
 		temp_inst = (char*)malloc(INSTRUCTION_LEN * sizeof(char));
@@ -207,20 +198,25 @@ inst_ll* set_memin() {
 		}
 		memset(temp_inst, 0, INSTRUCTION_LEN);
 		c = read_word(&temp_inst, 0, files_handler.meminst_file);
-		if (temp_inst[1] == '0') return head; // empty line at end of file, got no instruction
+		if (temp_inst[0] == '\0') {
+			free(temp_inst);
+			return head; // empty line at end of file, got no instruction
+		}
 		if (head == NULL) {
-			head = new_inst_ll();
+			head = new_inst();
 			list_ptr = head;
 		}
 		else {
-			list_ptr->next = new_inst_ll();
+			list_ptr->next = new_inst();
 			list_ptr = list_ptr->next;
 		}
-		list_ptr->pc = pc_count;
-		list_ptr->opcode = temp_inst[1] - '0';
-		list_ptr->dst = get_reg(temp_inst[2]);
-		list_ptr->src0 = get_reg(temp_inst[3]);
-		list_ptr->src1 = get_reg(temp_inst[4]);
+		if (list_ptr != NULL) {
+			list_ptr->pc = pc_count;
+			list_ptr->opcode = temp_inst[1] - '0';
+			list_ptr->dst = get_reg(temp_inst[2]);
+			list_ptr->src0 = get_reg(temp_inst[3]);
+			list_ptr->src1 = get_reg(temp_inst[4]);
+		}
 		free(temp_inst);
 		if (c == EOF) { // file ended with no '\n'
 			break;
@@ -235,26 +231,107 @@ void set_regs() {
 	}
 }
 
-void tomasulo(inst_ll* memin_head) {
-	inst_ll* prev_ptr;
+int look_for_station(inst_ll** list_head) {
+	inst_ll* next_inst = *list_head;
+	if (next_inst->opcode == 2 || next_inst->opcode == 3) {
+		for (int i = 0; i < add_units.nr_reserv; i++) {
+			if (add_units.reserv_stations[i].cur_inst == NULL) {
+				*list_head = (*list_head)->next;
+				add_units.reserv_stations[i].cur_inst = next_inst;
+				printf("%d: 0%d%d%d%d000\n", next_inst->pc, next_inst->opcode, next_inst->dst, next_inst->src0, next_inst->src1);
+				next_inst->next = NULL;
+				free(next_inst);
+				return 1;
+			}
+		}
+	}
+	else if (next_inst->opcode == 4) {
+		for (int i = 0; i < mul_units.nr_reserv; i++) {
+			if (mul_units.reserv_stations[i].cur_inst == NULL) {
+				*list_head = (*list_head)->next;
+				mul_units.reserv_stations[i].cur_inst = next_inst;
+				// check registers
+				printf("%d: 0%d%d%d%d000\n", next_inst->pc, next_inst->opcode, next_inst->dst, next_inst->src0, next_inst->src1);
+				next_inst->next = NULL;
+				free(next_inst);
+				return 1;
+			}
+		}
+	}
+	else if (next_inst->opcode == 5) {
+		for (int i = 0; i < div_units.nr_reserv; i++) {
+			if (div_units.reserv_stations[i].cur_inst == NULL) {
+				*list_head = (*list_head)->next;
+				div_units.reserv_stations[i].cur_inst = next_inst;
+				// check registers
+				printf("%d: 0%d%d%d%d000\n", next_inst->pc, next_inst->opcode, next_inst->dst, next_inst->src0, next_inst->src1);
+				next_inst->next = NULL;
+				free(next_inst);
+				return 1;
+			}
+		}
+	}
+	else if (next_inst->opcode == 6) {
+		printf("I got halt, and?\n");
+		free(next_inst);
+		return 1;
+	}
+	else {
+		printf("Invalid opcode was given\n");
+		*list_head = (*list_head)->next;
+		free(next_inst);
+		return -1;
+	}
+	return 0; // no free station
+}
 
-	while (memin_head != NULL) {
-		printf("%d\n", memin_head->opcode);
-		prev_ptr = memin_head;
-		memin_head = memin_head->next;
-		free(prev_ptr);
+void tomasulo(inst_ll* memin_head) {
+	inst_ll* fetched = NULL, * iter, * inst_holder;
+	int cycle = 0;
+
+	while (memin_head != NULL || fetched != NULL) { // reading intructions
+		// EXECUTE
+
+
+		// ISSUE
+		if (fetched != NULL) {
+			int issued = look_for_station(&fetched);
+			if (fetched != NULL && issued)
+				look_for_station(&fetched);
+		}
+
+		// FETCH
+		if (memin_head != NULL) {
+			inst_holder = get_next_inst(&memin_head); // fetch first
+			if (fetched == NULL) { // fetched is empty
+				fetched = inst_holder;
+				iter = inst_holder;
+			}
+			else {
+				iter = fetched; // begining of fetched instructions waiting to issue
+				while (iter->next != NULL) iter = iter->next; // go to end of line
+				iter->next = inst_holder; // add first instruction
+			}
+			inst_holder = get_next_inst(&memin_head); // fetch second
+			if (inst_holder != NULL) {
+				while (iter->next != NULL) iter = iter->next; // go to end of line
+				iter->next = inst_holder; // add second instruction
+			}
+		}
+		cycle++;
 	}
 }
 
 int main(int argc, char* argv[]) {
 	inst_ll* memin_head = NULL;
-	int i, j;
-	if (0 != get_args(argc, argv))
+
+	if (0 != open_files(argc, argv))
 		return -1;
 	set_func_units();
 	memin_head = set_memin();
 	set_regs();
 	if (memin_head != NULL) tomasulo(memin_head);
 	close_files();
+	free_reserv_stations();
 	return 0;
 }
