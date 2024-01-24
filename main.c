@@ -1,6 +1,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #define MEM_SIZE 4096
 #define INSTRUCTION_LEN 8
+#define REG_COUNT 16
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,17 +15,44 @@ struct {
 	FILE *cdb_file;
 } files_handler;
 
+float regs[REG_COUNT];
+
 struct {
 	int add_nr_units;
-	int mul_nr_units;
-	int div_nr_units;
 	int add_nr_reserv;
-	int mul_nr_reserv;
-	int div_nr_reserv;
 	int add_delay;
+	int mul_nr_units;
+	int mul_nr_reserv;
 	int mul_delay;
+	int div_nr_units;
+	int div_nr_reserv;
 	int div_delay;
 } func_units;
+
+typedef struct inst_linked_list {
+	int pc;
+	int opcode;
+	int dst;
+	int src0;
+	int src1;
+	struct inst_linked_list* next;
+} inst_ll;
+
+inst_ll* new_inst_ll() {
+	inst_ll* new_inst = NULL;
+	new_inst = (inst_ll*)malloc(sizeof(inst_ll));
+	if (new_inst == NULL)
+		printf("New instruction allocation falied\n");
+	else {
+		new_inst->pc = -1;
+		new_inst->opcode = -1;
+		new_inst->dst = -1;
+		new_inst->src0 = -1;
+		new_inst->src1 = -1;
+		new_inst->next = NULL;
+	}
+	return new_inst;
+}
 
 int get_args(int argc, char *argv[]) {
 
@@ -43,6 +71,14 @@ int get_args(int argc, char *argv[]) {
 		return -1;
 	}
 	return 0;
+}
+
+void close_files() {
+	fclose(files_handler.config_file);
+	fclose(files_handler.meminst_file);
+	fclose(files_handler.reg_file);
+	fclose(files_handler.instruc_file);
+	fclose(files_handler.cdb_file);
 }
 
 void set_unit(char* param_name, int param_val) {
@@ -74,19 +110,17 @@ char read_word(char** buffer, int size, FILE* read_origin) {
 	int read = 0;
 
 	while ((c = fgetc(read_origin)) != EOF && c != '\n' && c != ' ') {
-		//printf("i read %c\n", c);
-		if (read == size - 1 && read_origin == files_handler.config_file) {
+		printf("i read %c\n", c);
+		if (read_origin == files_handler.config_file && read == size - 1) {
 			size = 2 * size;
 			if (NULL == (*buffer = (char*)realloc(*buffer, size * sizeof(char)))) {
 				printf("Memory allocation failed\n");
 				return -1;
 			}
 		}
-		if (read_origin == files_handler.config_file)
-			(*buffer)[read] = c;
-		else if (read_origin == files_handler.meminst_file && read < 8){
-			(*buffer)[INSTRUCTION_LEN - read - 1] = c;
-		}
+		if (read_origin == files_handler.meminst_file && read > 7)
+			continue;
+		(*buffer)[read] = c;
 		read++;
 	}
 	if (read_origin == files_handler.config_file) (*buffer)[read] = '\0';
@@ -116,7 +150,6 @@ void set_func_units() {
 				got_param = 1;
 				break;
 		}
-		//printf("%s\n", param_buffer);
 		if ('=' != fgetc(files_handler.config_file)
 			|| ' ' != fgetc(files_handler.config_file)) {
 			printf("Wrong format for %s in cfg.txt\n", param_buffer);
@@ -148,45 +181,80 @@ void set_func_units() {
 	}
 }
 
-void set_memin(char* memin) {
-	int flag = 1, i;
-	char* start, * end, temp, c = 0;
+int get_reg(char reg_char) {
+	if (reg_char >= '0' && reg_char <= '9')
+		return reg_char - '0';
+	else if (reg_char >= 'a' && reg_char <= 'f')
+		return 10 + reg_char - 'a';
+	else if (reg_char >= 'A' && reg_char <= 'F')
+		return 10 + reg_char - 'A';
+	else {
+		printf("Wrong register for instruction, setting as reg0\n");
+		return 0;
+	}
+}
 
-	memset(memin, '0', MEM_SIZE * INSTRUCTION_LEN);
-	for (i = 0; i < 4096; i++) {
-		if (c != EOF) {
-			char* ptr = memin + i * INSTRUCTION_LEN;
-			c = read_word(&ptr, 0, files_handler.meminst_file);
-			start = memin + i * INSTRUCTION_LEN;
-			while (*start == '0') start++;
-			end = memin + (i + 1) * INSTRUCTION_LEN - 1;
-			while (end > start) {
-				temp = *start;
-				*start = *end;
-				*end = temp;
-				start++;
-				end--;
-			}
+inst_ll* set_memin() {
+	int pc_count;
+	char c = 0, * temp_inst;
+	inst_ll* head = NULL, * list_ptr = NULL, * prev_ptr;
+
+	for (pc_count = 0; pc_count < 4096; pc_count++) {
+		temp_inst = (char*)malloc(INSTRUCTION_LEN * sizeof(char));
+		if (temp_inst == NULL) {
+			printf("Allocation for instruction failed\n");
+			return head;
+		}
+		memset(temp_inst, 0, INSTRUCTION_LEN);
+		c = read_word(&temp_inst, 0, files_handler.meminst_file);
+		if (temp_inst[1] == '0') return head; // empty line at end of file, got no instruction
+		if (head == NULL) {
+			head = new_inst_ll();
+			list_ptr = head;
 		}
 		else {
+			list_ptr->next = new_inst_ll();
+			list_ptr = list_ptr->next;
+		}
+		list_ptr->pc = pc_count;
+		list_ptr->opcode = temp_inst[1] - '0';
+		list_ptr->dst = get_reg(temp_inst[2]);
+		list_ptr->src0 = get_reg(temp_inst[3]);
+		list_ptr->src1 = get_reg(temp_inst[4]);
+		free(temp_inst);
+		if (c == EOF) { // file ended with no '\n'
 			break;
 		}
+	}
+	return head;
+}
+
+void set_regs() {
+	for (int i = 0; i < 16; i++) {
+		regs[i] = (float)i;
+	}
+}
+
+void tomasulo(inst_ll* memin_head) {
+	inst_ll* prev_ptr;
+
+	while (memin_head != NULL) {
+		printf("%d\n", memin_head->opcode);
+		prev_ptr = memin_head;
+		memin_head = memin_head->next;
+		free(prev_ptr);
 	}
 }
 
 int main(int argc, char* argv[]) {
-	char memin[MEM_SIZE * INSTRUCTION_LEN];
+	inst_ll* memin_head = NULL;
 	int i, j;
 	if (0 != get_args(argc, argv))
 		return -1;
 	set_func_units();
-	set_memin(memin);
-	for (i = 0; i < 10; i++) {
-		printf("%d: ", i);
-		for (j = 0; j < 8; j++) {
-			printf("%c", memin[i* INSTRUCTION_LEN+j]);
-		}
-		printf("\n");
-	}
-	printf("%d", func_units.add_nr_units);
+	memin_head = set_memin();
+	set_regs();
+	if (memin_head != NULL) tomasulo(memin_head);
+	close_files();
+	return 0;
 }
