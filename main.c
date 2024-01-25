@@ -6,14 +6,15 @@
 #include "main.h"
 
 struct {
-	FILE *config_file;
-	FILE *meminst_file;
-	FILE *reg_file;
-	FILE *instruc_file;
-	FILE *cdb_file;
+	FILE* config_file;
+	FILE* meminst_file;
+	FILE* reg_file;
+	FILE* instruc_file;
+	FILE* cdb_file;
 } files_handler;
 
-float regs[REG_COUNT];
+reg regs[REG_COUNT];
+
 func_unit add_units;
 func_unit mul_units;
 func_unit div_units;
@@ -42,6 +43,51 @@ int open_files(int argc, char* argv[]) {
 		return -1;
 	}
 	return 0;
+}
+
+void write_trace_cbd(inst_ll* inst, float data) {
+
+	fprintf(files_handler.cdb_file, "%d %d ", inst->cycle_cdb, inst->pc);
+	switch (inst->opcode) {
+		case 2:
+		case 3:
+			fprintf(files_handler.cdb_file, "ADD ");
+			break;
+		case 4:
+			fprintf(files_handler.cdb_file, "MUL ");
+			break;
+		case 5:
+			fprintf(files_handler.cdb_file, "DIV ");
+			break;
+	}
+	fprintf(files_handler.cdb_file, "%f ", data);
+	switch (inst->opcode) {
+		case 2:
+		case 3:
+			fprintf(files_handler.cdb_file, "ADD");
+			break;
+		case 4:
+			fprintf(files_handler.cdb_file, "MUL");
+			break;
+		case 5:
+			fprintf(files_handler.cdb_file, "DIV");
+			break;
+	}
+	fprintf(files_handler.cdb_file, "%d\n", inst->tag);
+}
+
+void write_trace_inst(inst_ll* inst_head) {
+	inst_ll* temp;
+
+	while (inst_head != NULL) {
+		fprintf(files_handler.instruc_file, "0%d", inst_head->opcode);
+		fprintf(files_handler.instruc_file, "%c", give_reg(inst_head->dst));
+		fprintf(files_handler.instruc_file, "%c", give_reg(inst_head->src0));
+		fprintf(files_handler.instruc_file, "%c000 \n", give_reg(inst_head->src1));
+		temp = inst_head;
+		inst_head = inst_head->next;
+		free(temp);
+	}
 }
 
 void close_files() {
@@ -172,19 +218,6 @@ void set_func_units() {
 	}
 }
 
-int get_reg(char reg_char) {
-	if (reg_char >= '0' && reg_char <= '9')
-		return reg_char - '0';
-	else if (reg_char >= 'a' && reg_char <= 'f')
-		return 10 + reg_char - 'a';
-	else if (reg_char >= 'A' && reg_char <= 'F')
-		return 10 + reg_char - 'A';
-	else {
-		printf("Wrong register for instruction, setting as reg0\n");
-		return 0;
-	}
-}
-
 inst_ll* set_memin() {
 	int pc_count;
 	char c = 0, * temp_inst;
@@ -227,84 +260,199 @@ inst_ll* set_memin() {
 
 void set_regs() {
 	for (int i = 0; i < 16; i++) {
-		regs[i] = (float)i;
+		regs[i].vi = (float)i;
+		regs[i].qi = NULL;
 	}
 }
 
-int look_for_station(inst_ll** list_head) {
-	inst_ll* next_inst = *list_head;
-	if (next_inst->opcode == 2 || next_inst->opcode == 3) {
-		for (int i = 0; i < add_units.nr_reserv; i++) {
-			if (add_units.reserv_stations[i].cur_inst == NULL) {
-				*list_head = (*list_head)->next;
-				add_units.reserv_stations[i].cur_inst = next_inst;
-				printf("%d: 0%d%d%d%d000\n", next_inst->pc, next_inst->opcode, next_inst->dst, next_inst->src0, next_inst->src1);
-				next_inst->next = NULL;
-				free(next_inst);
-				return 1;
-			}
-		}
+float calulate_inst(reserv_station station_exec) {
+	if (station_exec.cur_inst->opcode == 2) {
+		return station_exec.vj + station_exec.vk;
 	}
-	else if (next_inst->opcode == 4) {
-		for (int i = 0; i < mul_units.nr_reserv; i++) {
-			if (mul_units.reserv_stations[i].cur_inst == NULL) {
-				*list_head = (*list_head)->next;
-				mul_units.reserv_stations[i].cur_inst = next_inst;
-				// check registers
-				printf("%d: 0%d%d%d%d000\n", next_inst->pc, next_inst->opcode, next_inst->dst, next_inst->src0, next_inst->src1);
-				next_inst->next = NULL;
-				free(next_inst);
-				return 1;
-			}
-		}
+	else if (station_exec.cur_inst->opcode == 3) {
+		return station_exec.vj - station_exec.vk;
 	}
-	else if (next_inst->opcode == 5) {
-		for (int i = 0; i < div_units.nr_reserv; i++) {
-			if (div_units.reserv_stations[i].cur_inst == NULL) {
-				*list_head = (*list_head)->next;
-				div_units.reserv_stations[i].cur_inst = next_inst;
-				// check registers
-				printf("%d: 0%d%d%d%d000\n", next_inst->pc, next_inst->opcode, next_inst->dst, next_inst->src0, next_inst->src1);
-				next_inst->next = NULL;
-				free(next_inst);
-				return 1;
-			}
-		}
+	else if (station_exec.cur_inst->opcode == 4) {
+		return station_exec.vj * station_exec.vk;
 	}
-	else if (next_inst->opcode == 6) {
-		printf("I got halt, and?\n");
-		free(next_inst);
+	else {
+		return station_exec.vj / station_exec.vk;
+	}
+}
+
+int issue_inst(inst_ll** list_head, int cycle, int* halt_flag_addr) {
+	inst_ll* cur_inst = *list_head;
+	func_unit* cur_unit;
+
+	if (cur_inst->opcode == 2 || cur_inst->opcode == 3) {
+		cur_unit = &add_units; // opcode to look at add stations
+		}
+	else if (cur_inst->opcode == 4) {
+		cur_unit = &mul_units; // opcode to look at multiply stations
+	}
+	else if (cur_inst->opcode == 5) {
+		cur_unit = &div_units; // opcode to look at division stations
+	}
+	else if (cur_inst->opcode == 6) {
+		*halt_flag_addr = 1;
+		*list_head = (*list_head)->next;
 		return 1;
 	}
 	else {
 		printf("Invalid opcode was given\n");
 		*list_head = (*list_head)->next;
-		free(next_inst);
 		return -1;
+	}
+	for (int i = 0; i < cur_unit->nr_reserv; i++) {
+		if (cur_unit->reserv_stations[i].cur_inst == NULL) { // look for free station
+			// take next instruction from fetched queue and place it in the station
+			cur_unit->reserv_stations[i].cur_inst = cur_inst;
+			cur_inst->tag = i; // update tag
+			cur_inst->cycle_issued = cycle;
+			// get reg0
+			if (regs[cur_unit->reserv_stations[i].cur_inst->src0].qi == NULL) { // reg value can be used
+				cur_unit->reserv_stations[i].vj = regs[cur_unit->reserv_stations[i].cur_inst->src0].vi;
+			}
+			else { // reg value is waiting on a station to finish writing
+				cur_unit->reserv_stations[i].qj = regs[cur_unit->reserv_stations[i].cur_inst->src0].qi;
+			}
+			// get reg1
+			if (regs[cur_unit->reserv_stations[i].cur_inst->src1].qi == NULL) { // reg value can be used
+				cur_unit->reserv_stations[i].vk = regs[cur_unit->reserv_stations[i].cur_inst->src1].vi;
+			}
+			else { // reg value is waiting on a station to finish writing
+				cur_unit->reserv_stations[i].qk = regs[cur_unit->reserv_stations[i].cur_inst->src1].qi;
+			}
+			// set reg_dst data as not ready
+			regs[cur_unit->reserv_stations[i].cur_inst->dst].qi = &(cur_unit->reserv_stations[i]);
+			*list_head = (*list_head)->next;
+			return 1;
+		}
 	}
 	return 0; // no free station
 }
 
-void tomasulo(inst_ll* memin_head) {
-	inst_ll* fetched = NULL, * iter, * inst_holder;
-	int cycle = 0;
+void check_exec_unit(func_unit* cur_unit, int cycle) {
+	reserv_station station_iter;
 
-	while (memin_head != NULL || fetched != NULL) { // reading intructions
+	for (int i = 0; i < cur_unit->nr_reserv; i++) {
+		// check if an instruction can be executed
+		station_iter = cur_unit->reserv_stations[i];
+		if (station_iter.cur_inst != NULL && station_iter.cur_inst->cycle_exec == -1) {
+			if (station_iter.qj == NULL && station_iter.qk == NULL) {
+				station_iter.cur_inst->cycle_exec = cycle;
+			}
+		}
+	}
+}
+
+void check_exec(int cycle) {
+	check_exec_unit(&add_units, cycle);
+	check_exec_unit(&mul_units, cycle);
+	check_exec_unit(&div_units, cycle);
+}
+
+void update_station_cbd(func_unit* cur_unit, reserv_station* finished_station_addr, float data) {
+	reserv_station station_iter;
+
+	for (int i = 0; i < cur_unit->nr_reserv; i++) {
+		// look for a reserve station waiting of the result
+		station_iter = cur_unit->reserv_stations[i];
+		if (station_iter.cur_inst != NULL && station_iter.qj == finished_station_addr) {
+			station_iter.vj = data;
+			station_iter.qj = NULL;
+		}
+		if (station_iter.cur_inst != NULL && station_iter.qk == finished_station_addr) {
+			station_iter.vk = data;
+			station_iter.qk = NULL;
+		}
+	}
+}
+
+void broadcast_cbd(reserv_station* finished_station_addr, int cycle) {
+	float data = calulate_inst(*finished_station_addr);
+	regs[finished_station_addr->cur_inst->dst].vi = data;
+	regs[finished_station_addr->cur_inst->dst].qi = NULL;
+	finished_station_addr->cur_inst->cycle_cdb = cycle;
+	update_station_cbd(&add_units, finished_station_addr, data);
+	update_station_cbd(&mul_units, finished_station_addr, data);
+	update_station_cbd(&div_units, finished_station_addr, data);
+	write_trace_cbd(finished_station_addr->cur_inst, regs[finished_station_addr->cur_inst->dst].vi);
+}
+
+void write_cbd_unit(func_unit* cur_unit, int cycle) {
+	reserv_station station_iter;
+
+	for (int i = 0; i < cur_unit->nr_reserv; i++) {
+		// check if an instruction that started previously is finished
+		station_iter = cur_unit->reserv_stations[i];
+		if (station_iter.cur_inst != NULL && station_iter.cur_inst->cycle_exec != -1) {
+			if (cycle - station_iter.cur_inst->cycle_exec >= cur_unit->delay) {
+				broadcast_cbd(&station_iter, cycle);
+				station_iter.cur_inst = NULL;
+			}
+		}
+	}
+}
+
+void write_cbd(int cycle) {
+	write_cbd_unit(&add_units, cycle);
+	write_cbd_unit(&mul_units, cycle);
+	write_cbd_unit(&div_units, cycle);
+}
+
+int look_for_busy_station(func_unit cur_unit) {
+	reserv_station station_iter;
+
+	for (int i = 0; i < cur_unit.nr_reserv; i++) {
+		// check if an instruction that started previously is finished
+		station_iter = cur_unit.reserv_stations[i];
+		if (station_iter.cur_inst != NULL) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+int look_for_busy() {
+	if (!look_for_busy_station(add_units)) {
+		if (!look_for_busy_station(mul_units)) {
+			if (!look_for_busy_station(div_units)) {
+				return 0;
+			}
+		}
+	}
+	return 1;
+}
+
+inst_ll* tomasulo(inst_ll* memin_head) {
+	inst_ll* fetched = NULL, * memin_new_head = NULL;
+	inst_ll* iter, * inst_holder;
+	int cycle = 0, flag = 1, halt_flag = 0;
+
+	while (!halt_flag) { // reading intructions		
 		// EXECUTE
+		check_exec(cycle);
 
+		// WRITE CBD
+		write_cbd(cycle);
 
 		// ISSUE
 		if (fetched != NULL) {
-			int issued = look_for_station(&fetched);
+			int issued = issue_inst(&fetched, cycle, &halt_flag);
 			if (fetched != NULL && issued)
-				look_for_station(&fetched);
+				issue_inst(&fetched, cycle, &halt_flag);
 		}
 
 		// FETCH
 		if (memin_head != NULL) {
-			inst_holder = get_next_inst(&memin_head); // fetch first
+			inst_holder = fetch_inst(&memin_head); // fetch first
 			if (fetched == NULL) { // fetched is empty
 				fetched = inst_holder;
+				if (flag) { // save new instruction head
+					memin_new_head = fetched;
+					flag = 0;
+				}
 				iter = inst_holder;
 			}
 			else {
@@ -312,7 +460,7 @@ void tomasulo(inst_ll* memin_head) {
 				while (iter->next != NULL) iter = iter->next; // go to end of line
 				iter->next = inst_holder; // add first instruction
 			}
-			inst_holder = get_next_inst(&memin_head); // fetch second
+			inst_holder = fetch_inst(&memin_head); // fetch second
 			if (inst_holder != NULL) {
 				while (iter->next != NULL) iter = iter->next; // go to end of line
 				iter->next = inst_holder; // add second instruction
@@ -320,6 +468,16 @@ void tomasulo(inst_ll* memin_head) {
 		}
 		cycle++;
 	}
+	while (1) {
+		// EXECUTE
+		check_exec(cycle);
+
+		// WRITE CBD
+		write_cbd(cycle);
+		if (!look_for_busy()) break;
+		cycle++;
+	}
+	return memin_new_head;
 }
 
 int main(int argc, char* argv[]) {
@@ -330,7 +488,8 @@ int main(int argc, char* argv[]) {
 	set_func_units();
 	memin_head = set_memin();
 	set_regs();
-	if (memin_head != NULL) tomasulo(memin_head);
+	tomasulo(memin_head);
+	write_trace_inst(memin_head);
 	close_files();
 	free_reserv_stations();
 	return 0;

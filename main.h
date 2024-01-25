@@ -9,12 +9,16 @@ typedef struct inst_linked_list {
 	int src0;
 	int src1;
 	struct inst_linked_list* next;
+	int tag;
+	int cycle_issued;
+	int cycle_exec;
+	int cycle_cdb;
 } inst_ll;
 
 typedef struct reserv_station {
 	inst_ll* cur_inst;
-	int vj;
-	int vk;
+	float vj;
+	float vk;
 	struct reserv_station* qj;
 	struct reserv_station* qk;
 } reserv_station;
@@ -25,6 +29,11 @@ typedef struct function_unit {
 	reserv_station* reserv_stations;
 	int delay;
 } func_unit;
+
+typedef struct reg {
+	float vi;
+	reserv_station* qi;
+} reg;
 
 inst_ll* new_inst() {
 	inst_ll* new_inst = NULL;
@@ -38,11 +47,15 @@ inst_ll* new_inst() {
 		new_inst->src0 = -1;
 		new_inst->src1 = -1;
 		new_inst->next = NULL;
+		new_inst->tag = -1;
+		new_inst->cycle_issued = -1;
+		new_inst->cycle_exec = -1;
+		new_inst->cycle_cdb = -1;
 	}
 	return new_inst;
 }
 
-inst_ll* get_next_inst(inst_ll** list_head) {
+inst_ll* fetch_inst(inst_ll** list_head) {
 	inst_ll* temp;
 
 	if (*list_head == NULL) return NULL; // empty list
@@ -50,6 +63,28 @@ inst_ll* get_next_inst(inst_ll** list_head) {
 	*list_head = (*list_head)->next; // advance list head
 	temp->next = NULL; // cut item to return from list
 	return temp;
+}
+
+int get_reg(char reg_char) {
+	if (reg_char >= '0' && reg_char <= '9')
+		return reg_char - '0';
+	else if (reg_char >= 'a' && reg_char <= 'f')
+		return 10 + reg_char - 'a';
+	else if (reg_char >= 'A' && reg_char <= 'F')
+		return 10 + reg_char - 'A';
+	else {
+		printf("Wrong register for instruction, setting as reg0\n");
+		return 0;
+	}
+}
+
+char give_reg(int reg_num) {
+	if (reg_num < 10) {
+		return '0' + reg_num;
+	}
+	else {
+		return 'A' + 10 - reg_num;
+	}
 }
 
 int intlen(int num) {
