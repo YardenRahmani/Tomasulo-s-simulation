@@ -111,10 +111,21 @@ void set_finished_unit(func_unit* cur_unit) {
 
 	for (int i = 0; i < cur_unit->nr_reserv; i++) {
 		iter = (cur_unit->reserv_stations) + i;
-		if (iter->cur_inst != NULL && iter->cur_inst->cycle_cdb != -1) {
-			// if the station sent data on cdb, station is free for next instruction
-			iter->cur_inst = NULL;
-			cur_unit->nr_units_busy--;
+		if (iter->cur_inst != NULL) {
+			if (iter->cur_inst->cycle_cdb != -1) {
+				// if the station sent data on cdb, station is free form next cycle
+				iter->cur_inst = NULL;
+				iter->vj = -1;
+				iter->vk = -1;
+				cur_unit->nr_units_busy--;
+			}
+			// if in a station new data arrived at the cycle, mark it valid for next cycle
+			if (iter->vj != -1 && iter->qj != NULL) {
+				iter->qj = NULL;
+			}
+			if (iter->vk != -1 && iter->qk != NULL) {
+				iter->qk = NULL;
+			}
 		}
 	}
 	if (!cur_unit->cdb_free) { // transmiting on cdb taked at most 1 cycle
@@ -123,7 +134,7 @@ void set_finished_unit(func_unit* cur_unit) {
 }
 
 void set_finished_comp(func_unit* units_addr_arr[3]) {
-	// set components the are finished (cdb, computation units) as free
+	// set components and data that will be ready next cycle to free or valid
 	set_finished_unit(units_addr_arr[0]);
 	set_finished_unit(units_addr_arr[1]);
 	set_finished_unit(units_addr_arr[2]);
@@ -494,7 +505,7 @@ int issue_inst(inst_ll* memin_head, inst_ll** issued_addr, int cycle, int* start
 				cur_unit->reserv_stations[i].qk = regs[cur_inst->src1].qi;
 			}
 			// set reg_dst data as not ready
-			regs[cur_inst->dst].qi = &((cur_unit->reserv_stations)[i]);
+			regs[cur_inst->dst].qi = (cur_unit->reserv_stations) + i;
 			if (*start_flag) {
 				*issued_addr = memin_head;
 				*start_flag = 0;
@@ -523,7 +534,7 @@ void check_exec_unit(func_unit* cur_unit, int cycle) {
 					cur_unit->nr_units_busy++; // mark the unit as busy
 				}
 			}
-			else if (station_iter->cur_inst->cycle_exec_end == -1){
+			else if (station_iter->cur_inst->cycle_exec_start != -1 && station_iter->cur_inst->cycle_exec_end == -1){
 				// check if was executed but not finished yet
 				if (cycle - station_iter->cur_inst->cycle_exec_start + 1 >= cur_unit->delay) {
 					// check if will finish in this cycle
@@ -544,15 +555,13 @@ void update_station_cbd(func_unit* cur_unit, reserv_station* finished_station_ad
 	reserv_station* station_iter;
 
 	for (int i = 0; i < cur_unit->nr_reserv; i++) {
-		// look for a reserve station waiting of the result
+		// look for a reserve station waiting for the result
 		station_iter = (cur_unit->reserv_stations) + i;
 		if (station_iter->cur_inst != NULL && station_iter->qj == finished_station_addr) {
 			station_iter->vj = data;
-			station_iter->qj = NULL;
 		}
 		if (station_iter->cur_inst != NULL && station_iter->qk == finished_station_addr) {
 			station_iter->vk = data;
-			station_iter->qk = NULL;
 		}
 	}
 }
@@ -566,7 +575,7 @@ void broadcast_cbd(reserv_station* finished_station_addr, int cycle, func_unit* 
 	update_station_cbd(units_addr_arr[0], finished_station_addr, data);
 	update_station_cbd(units_addr_arr[1], finished_station_addr, data);
 	update_station_cbd(units_addr_arr[2], finished_station_addr, data);
-	write_trace_cbd(finished_station_addr->cur_inst, regs[finished_station_addr->cur_inst->dst].vi);
+	write_trace_cbd(finished_station_addr->cur_inst, data);
 }
 
 void write_cbd_unit(func_unit* cur_unit, int cycle, func_unit* units_addr_arr[3]) {
