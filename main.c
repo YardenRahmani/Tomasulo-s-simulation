@@ -2,19 +2,21 @@
 #define MEM_SIZE 4096
 #define INSTRUCTION_LEN 8
 #define REG_COUNT 16
+#define NUM_OF_FUNC 3
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 typedef struct inst_linked_list {
+	// struct holding an individual instruction
 	int pc;
 	int opcode;
 	int dst;
 	int src0;
 	int src1;
-	struct inst_linked_list* next;
-	int tag;
+	struct inst_linked_list* next; // compatible to holding the instructions in linked lists
+	int tag; // tag holding the station number, together with opcode creats the full tag
 	int cycle_issued;
 	int cycle_exec_start;
 	int cycle_exec_end;
@@ -22,38 +24,43 @@ typedef struct inst_linked_list {
 } inst_ll;
 
 typedef struct reserv_station {
-	inst_ll* cur_inst;
-	float vj;
-	float vk;
-	struct reserv_station* qj;
-	struct reserv_station* qk;
+	// struct simulating a reservation station
+	inst_ll* cur_inst; // current instruction in the station, NULL for a free station
+	float vj; // value of reg src0, -1 when empty
+	float vk; // value of reg src1, -1 when empty
+	struct reserv_station* qj; // if value not ready will point to the station is waiting for
+	struct reserv_station* qk; // if value not ready will point to the station is waiting for
 } reserv_station;
 
 typedef struct function_unit {
-	int nr_units;
-	int nr_units_busy;
-	int nr_reserv;
-	reserv_station* reserv_stations;
-	int delay;
-	int cdb_free;
+	// struct simulating a functional unit, 1 will exist in the program for each ADD MUL DIV
+	int nr_units; // number of computational units of that function
+	int nr_units_busy; // count the number who are busy at any moment
+	int nr_reserv; // number of reservation station for that function
+	reserv_station* reserv_stations; // pointer to hold array of reservation stations
+	int delay; // the delay of that function
+	int cdb_free; // 1 for cbd is free to write in that cycle, 0 for busy
 } func_unit;
 
 typedef struct reg {
-	float vi;
-	reserv_station* qi;
+	// struct simulating a register
+	float vi; // value in the register
+	reserv_station* qi; // NULL for a valid value, pointing to the station computing if not ready
 } reg;
 
 struct {
-	FILE* config_file;
-	FILE* meminst_file;
-	FILE* reg_file;
-	FILE* instrace_file;
-	FILE* cdb_file;
+	// global struct for file pointers
+	FILE* config_file; // configuration input file
+	FILE* meminst_file; // instruction memory input file
+	FILE* reg_file; // register output file
+	FILE* instrace_file; // instruction trace output file
+	FILE* cdb_file; // CDB trace output file
 } files_handler;
 
-reg regs[REG_COUNT];
+reg regs[REG_COUNT]; // global register array
 
 inst_ll* new_inst() {
+	// function creating a pointer to a new linked list item
 	inst_ll* new_inst = NULL;
 	new_inst = (inst_ll*)malloc(sizeof(inst_ll));
 	if (new_inst == NULL)
@@ -75,6 +82,7 @@ inst_ll* new_inst() {
 }
 
 int get_reg(char reg_char) {
+	// translate a register name in hex char to register number
 	if (reg_char >= '0' && reg_char <= '9')
 		return reg_char - '0';
 	else if (reg_char >= 'a' && reg_char <= 'f')
@@ -88,6 +96,7 @@ int get_reg(char reg_char) {
 }
 
 int give_reg(int reg_num) {
+	// reverse of get_reg, turn a number to hex char
 	if (reg_num < 10) {
 		return '0' + reg_num;
 	}
@@ -96,59 +105,50 @@ int give_reg(int reg_num) {
 	}
 }
 
-int intlen(int num) {
-	int count = 0;
-
-	while (num > 0) {
-		num = num / 10;
-		count++;
-	}
-	return count;
-}
-
-void set_finished_unit(func_unit* cur_unit) {
+void set_finished_comp(func_unit* units_addr_arr[3]) {
+	// set components and data that will be available next cycle to free or valid
+	func_unit* cur_unit;
 	reserv_station* iter = NULL;
 
-	for (int i = 0; i < cur_unit->nr_reserv; i++) {
-		iter = (cur_unit->reserv_stations) + i;
-		if (iter->cur_inst != NULL) {
-			if (iter->cur_inst->cycle_cdb != -1) {
-				// if the station sent data on cdb, station is free form next cycle
-				iter->cur_inst = NULL;
-				iter->vj = -1;
-				iter->vk = -1;
-				cur_unit->nr_units_busy--;
-			}
-			// if in a station new data arrived at the cycle, mark it valid for next cycle
-			if (iter->vj != -1 && iter->qj != NULL) {
-				iter->qj = NULL;
-			}
-			if (iter->vk != -1 && iter->qk != NULL) {
-				iter->qk = NULL;
+	for (int j = 0; j < NUM_OF_FUNC; j++) {
+		// iterate over 3 functions
+		cur_unit = units_addr_arr[j];
+		for (int i = 0; i < cur_unit->nr_reserv; i++) {
+			// iterate over all reservation stations
+			iter = (cur_unit->reserv_stations) + i;
+			if (iter->cur_inst != NULL) {
+				if (iter->cur_inst->cycle_cdb != -1) {
+					// if the station sent data on cdb, station is free from next cycle
+					iter->cur_inst = NULL;
+					iter->vj = -1;
+					iter->vk = -1;
+					cur_unit->nr_units_busy--;
+				}
+				// if in a station new data arrived at the cycle, mark it valid for next cycle
+				if (iter->vj != -1 && iter->qj != NULL) {
+					iter->qj = NULL;
+				}
+				if (iter->vk != -1 && iter->qk != NULL) {
+					iter->qk = NULL;
+				}
 			}
 		}
+		if (!cur_unit->cdb_free) {
+			// transmiting on cdb takes at most 1 cycle, mark free for next cycle
+			cur_unit->cdb_free = 1;
+		}
 	}
-	if (!cur_unit->cdb_free) { // transmiting on cdb taked at most 1 cycle
-		cur_unit->cdb_free = 1;
-	}
-}
-
-void set_finished_comp(func_unit* units_addr_arr[3]) {
-	// set components and data that will be ready next cycle to free or valid
-	set_finished_unit(units_addr_arr[0]);
-	set_finished_unit(units_addr_arr[1]);
-	set_finished_unit(units_addr_arr[2]);
 }
 
 void free_reserv_stations(func_unit* units_addr_arr[3]) {
-
-	free(units_addr_arr[0]->reserv_stations);
-	free(units_addr_arr[1]->reserv_stations);
-	free(units_addr_arr[2]->reserv_stations);
+	// free allocated reservation station array
+	for (int j = 0; j < NUM_OF_FUNC; j++) {
+		free(units_addr_arr[j]->reserv_stations);
+	}
 }
 
 int open_files(int argc, char* argv[]) {
-
+	// function to open all files and check for errors
 	if (argc != 6) {
 		printf("Wrong amount of arguments\n");
 		return -1;
@@ -304,15 +304,19 @@ void set_unit(char* param_name, int param_val, func_unit* units_addr_arr[3]) {
 }
 
 char read_word(char** buffer, int size, FILE* read_origin) {
-	char c;
+	char c, * temp = NULL;
 	int read = 0;
 
 	while ((c = fgetc(read_origin)) != EOF && c != '\n' && c != ' ') {
 		if (read_origin == files_handler.config_file && read == size - 1) {
 			size = 2 * size;
-			if (NULL == (*buffer = (char*)realloc(*buffer, size * sizeof(char)))) {
+			if (NULL == (temp = (char*)realloc(*buffer, size * sizeof(char)))) {
 				printf("Memory allocation failed\n");
 				return -1;
+			}
+			else {
+				// saving realloc to temp first will prevent data lose on allocation failure
+				*buffer = temp;
 			}
 		}
 		if (read_origin == files_handler.meminst_file && read > 7)
