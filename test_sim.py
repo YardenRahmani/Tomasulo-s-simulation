@@ -2,7 +2,7 @@ import subprocess
 import filecmp
 import os
 
-NUM_OF_TESTS = 2
+NUM_OF_TESTS = 5
 
 def run_c_program(run):
     args_list = [".\sim.exe"]
@@ -20,9 +20,7 @@ def compare_output(run, file_name):
 
     try:
         comparison_result = filecmp.cmp(generated_output_path, predicted_output_path)
-        if comparison_result:
-            pass
-        else:
+        if not comparison_result:
             print(f"Output file {file_name} do not match for run {run}.")
         os.remove(generated_output_path)
     except FileNotFoundError as e:
@@ -37,3 +35,4 @@ if __name__ == "__main__":
         compare_output(run, "regout")
         compare_output(run, "traceinst")
         compare_output(run, "tracecdb")
+        print(f"Test {run} out of {NUM_OF_TESTS} completed")
