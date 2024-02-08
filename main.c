@@ -26,52 +26,53 @@ typedef enum FuncType {
 	DIV_FUNC
 } FuncType;
 
-typedef struct inst_linked_list {
+typedef struct InstLinkedList {
 	// struct holding an individual instruction
 	int pc;
 	int opcode;
 	int dst;
 	int src0;
 	int src1;
-	struct inst_linked_list* next; // compatible to holding the instructions in linked lists
+	struct InstLinkedList* next; // compatible to holding the instructions in linked lists
 	int tag; // tag holding the station number, together with opcode creats the full tag
 	int cycle_issued;
 	int cycle_exec_start;
 	int cycle_exec_end;
 	int cycle_cdb;
-} inst_ll;
+} InstLL;
 
-typedef struct reserv_station {
+typedef struct ReservationStation {
 	// struct simulating a reservation station
-	inst_ll* cur_inst; // current instruction in the station, NULL for a free station
-	float vj; // value of reg src0, -1 when empty
-	float vk; // value of reg src1, -1 when empty
-	struct reserv_station* qj; // if value not ready will point to the station is waiting for
-	struct reserv_station* qk; // if value not ready will point to the station is waiting for
-} reserv_station;
+	InstLL* cur_inst; // current instruction in the station, NULL for a free station
+	float vj; // value of reg src0, input of FF
+	float vk; // value of reg src1, input of FF
+	struct ReservationStation* qj; // if value not ready will point to the station is waiting for
+	struct ReservationStation* qk; // if value not ready will point to the station is waiting for
+	int j_valid; // tag in qj finished and needs to be marked NULL at next cycle
+	int k_valid; // tag in qk finished and needs to be marked NULL at next cycle
+} ReservStation;
 
-typedef struct function_unit {
+typedef struct FunctionUnit {
 	// struct simulating a functional unit, 1 will exist in the program for each ADD MUL DIV
-	int nr_units; // number of computational units of that function
-	int nr_units_busy; // count the number who are busy at any moment
+	int nr_units_free; // number of free computational units
 	int nr_reserv; // number of reservation station for that function
-	reserv_station* reserv_stations; // pointer to hold array of reservation stations
+	ReservStation* reserv_stations; // pointer to hold array of reservation stations
 	int delay; // the delay of that function
 	int cdb_free; // 1 for cbd is free to write in that cycle, 0 for busy
-} func_unit;
+} FuncUnit;
 
-typedef struct reg {
+typedef struct ProgramRegister {
 	// struct simulating a register
 	float vi; // value in the register
-	reserv_station* qi; // NULL for a valid value, pointing to the station computing if not ready
-} reg;
+	ReservStation* qi; // NULL for a valid value, pointing to the station computing if not ready
+} ProgReg;
 
-reg regs[REG_COUNT]; // global registers array
+ProgReg regs[REG_COUNT]; // global registers array
 
-inst_ll* new_inst() {
+InstLL* new_inst() {
 	// function creating a pointer to a new linked list item
-	inst_ll* new_inst = NULL;
-	new_inst = (inst_ll*)malloc(sizeof(inst_ll));
+	InstLL* new_inst = NULL;
+	new_inst = (InstLL*)malloc(sizeof(InstLL));
 	if (new_inst == NULL)
 		printf("New instruction allocation falied\n");
 	else { // initializing defaults
@@ -90,23 +91,25 @@ inst_ll* new_inst() {
 	return new_inst;
 }
 
-reserv_station* create_reserv_station(int reserv_num) {
+ReservStation* create_reserv_station(int reserv_num) {
 	// create the reservation stations for a single function (add, mul or div)
-	reserv_station* cur_reserv = (reserv_station*)malloc(reserv_num * sizeof(reserv_station));
+	ReservStation* cur_reserv = (ReservStation*)malloc(reserv_num * sizeof(ReservStation));
 
 	if (cur_reserv != NULL) {
 		for (int i = 0; i < reserv_num; i++) { // initializing defaults
 			cur_reserv[i].cur_inst = NULL;
-			cur_reserv[i].vj = -1;
-			cur_reserv[i].vk = -1;
+			cur_reserv[i].vj = 0;
+			cur_reserv[i].vk = 0;
 			cur_reserv[i].qj = NULL;
 			cur_reserv[i].qk = NULL;
+			cur_reserv[i].j_valid = 0;
+			cur_reserv[i].k_valid = 0;
 		}
 	}
 	return cur_reserv;
 }
 
-void free_reserv_stations(func_unit* units_addr_arr[3]) {
+void free_reserv_stations(FuncUnit* units_addr_arr[NUM_OF_FUNC]) {
 	// free allocated reservation station array
 	for (int j = 0; j < NUM_OF_FUNC; j++) {
 		free(units_addr_arr[j]->reserv_stations);
@@ -159,7 +162,7 @@ int open_files(int argc, char* argv[], FILE* files_handler[NUM_OF_FILES]) {
 	return 0;
 }
 
-void write_trace_cdb(inst_ll* inst, float data, FILE* cdb_file) {
+void write_trace_cdb(InstLL* inst, float data, FILE* cdb_file) {
 	// function writing trace CDB, will be called in run for every cdb access and write 1 line
 	fprintf(cdb_file, "%d %d ", inst->cycle_cdb, inst->pc);
 	switch (inst->opcode) {
@@ -190,10 +193,10 @@ void write_trace_cdb(inst_ll* inst, float data, FILE* cdb_file) {
 	fprintf(cdb_file, "%d\n", inst->tag);
 }
 
-void write_trace_inst(inst_ll* inst_head, FILE* instrace_file) {
+void write_trace_inst(InstLL* inst_head, FILE* instrace_file) {
 	// function to write instruction trace and free allocated instructions linked list
 	// will be called once the algorithm is done simulating
-	inst_ll* temp;
+	InstLL* temp;
 
 	while (inst_head != NULL) {
 		if (inst_head->opcode == 6) { // halt reached
@@ -239,6 +242,8 @@ void write_regout(FILE* reg_file) {
 	}
 }
 
+// ****setting simulation****
+
 char read_word(char** buffer, int size, FILE* read_ptr, FileType read_origin) {
 	// function that reads one word from a specific file
 	char c, * temp = NULL;
@@ -264,27 +269,22 @@ char read_word(char** buffer, int size, FILE* read_ptr, FileType read_origin) {
 		(*buffer)[read] = c; //insert read char to buffer
 		read++;
 	}
-	if (read_origin == CONFIG) (*buffer)[read] = '\0'; // config will be saved as string,instuctions as list of chars.
+	(*buffer)[read] = '\0';
 	return c;
 }
 
-// ****setting simulation****
-
-void set_unit(char* param_name, int param_val, func_unit* units_addr_arr[3]) {
+void set_unit(char* param_name, int param_val, FuncUnit* units_addr_arr[NUM_OF_FUNC]) {
 	// function to set a unit in the proccessor by parameter name and its value
 	if (strcmp(param_name, "add_nr_units") == 0) {
-		units_addr_arr[ADD_FUNC]->nr_units = param_val;
-		units_addr_arr[ADD_FUNC]->nr_units_busy = 0;
+		units_addr_arr[ADD_FUNC]->nr_units_free = param_val;
 		units_addr_arr[ADD_FUNC]->cdb_free = 1;
 	}
 	else if (strcmp(param_name, "mul_nr_units") == 0) {
-		units_addr_arr[MUL_FUNC]->nr_units = param_val;
-		units_addr_arr[MUL_FUNC]->nr_units_busy = 0;
+		units_addr_arr[MUL_FUNC]->nr_units_free = param_val;
 		units_addr_arr[MUL_FUNC]->cdb_free = 1;
 	}
 	else if (strcmp(param_name, "div_nr_units") == 0) {
-		units_addr_arr[DIV_FUNC]->nr_units = param_val;
-		units_addr_arr[DIV_FUNC]->nr_units_busy = 0;
+		units_addr_arr[DIV_FUNC]->nr_units_free = param_val;
 		units_addr_arr[DIV_FUNC]->cdb_free = 1;
 	}
 	else if (strcmp(param_name, "add_nr_reservation") == 0) {
@@ -309,7 +309,7 @@ void set_unit(char* param_name, int param_val, func_unit* units_addr_arr[3]) {
 		printf("no match for parameter %s in cfg.txt\n", param_name);
 }
 
-void set_processor(func_unit* units_addr_arr[3], FILE* config_file) {
+void set_processor(FuncUnit* units_addr_arr[NUM_OF_FUNC], FILE* config_file) {
 	// function to read config file
 	char* param_buffer = NULL, * val_buffer = NULL;
 	int got_param = 0, got_val = 0, flag = 1;
@@ -371,14 +371,14 @@ void set_processor(func_unit* units_addr_arr[3], FILE* config_file) {
 	}
 }
 
-inst_ll* set_memin(FILE* meminst_file) {
+InstLL* set_memin(FILE* meminst_file) {
 	// function reading the instruction memory from file and save it in the program as linked list for simulation
 	int pc_count;
 	char c = 0, * temp_inst = NULL;
-	inst_ll* head = NULL, * list_ptr = NULL;
+	InstLL* head = NULL, * list_ptr = NULL;
 
 	for (pc_count = 0; pc_count < 4096; pc_count++) {
-		temp_inst = (char*)malloc(INSTRUCTION_LEN * sizeof(char));
+		temp_inst = (char*)malloc((INSTRUCTION_LEN + 1) * sizeof(char));
 		if (temp_inst == NULL) {
 			printf("Allocation for instruction failed\n");
 			return head;
@@ -422,7 +422,7 @@ void set_regs() {
 
 // ****simulation tomasulo****
 
-float calulate_inst(reserv_station station_exec) {
+float calulate_inst(ReservStation station_exec) {
 	// calculating the result of an instruction
 	if (station_exec.cur_inst->opcode == 2) {
 		return station_exec.vj + station_exec.vk;
@@ -438,7 +438,7 @@ float calulate_inst(reserv_station station_exec) {
 	}
 }
 
-int fetch_inst(inst_ll* memin_head, inst_ll** fetched_addr, int* start_flag) {
+int fetch_inst(InstLL* memin_head, InstLL** fetched_addr, int* start_flag) {
 	// simulating fetch stage
 
 	if (*start_flag) { // fetch the first instruction
@@ -454,11 +454,11 @@ int fetch_inst(inst_ll* memin_head, inst_ll** fetched_addr, int* start_flag) {
 	return 0;
 }
 
-int issue_inst(inst_ll* memin_head, inst_ll** issued_addr, int cycle, int* start_flag, int* halt_flag, func_unit* units_addr_arr[3]) {
+int issue_inst(InstLL* memin_head, InstLL** issued_addr, int cycle, int* start_flag, int* halt_flag, FuncUnit* units_addr_arr[NUM_OF_FUNC]) {
 	// simulating issue stage
 
-	func_unit* cur_unit;
-	inst_ll* cur_inst;
+	FuncUnit* cur_unit;
+	InstLL* cur_inst;
 
 	if (*start_flag) { // if no instructions were issued yet, next is the memin head
 		cur_inst = memin_head;
@@ -466,7 +466,7 @@ int issue_inst(inst_ll* memin_head, inst_ll** issued_addr, int cycle, int* start
 	else {
 		cur_inst = (*issued_addr)->next;
 		if (cur_inst == NULL) {  // all instruction were issued
-			*issued_addr = (*issued_addr)->next;
+			*issued_addr = NULL;
 			return 0;
 		}
 	}
@@ -525,11 +525,11 @@ int issue_inst(inst_ll* memin_head, inst_ll** issued_addr, int cycle, int* start
 	return 0; // no free station, no instruction was issued
 }
 
-void exec_inst(int cycle, func_unit* units_addr_arr[3]) {
+void exec_inst(int cycle, FuncUnit* units_addr_arr[NUM_OF_FUNC]) {
 	// simulating execute stage
 	
-	func_unit* unit_iter = NULL;
-	reserv_station* station_iter = NULL;
+	FuncUnit* unit_iter = NULL;
+	ReservStation* station_iter = NULL;
 	
 	for (int j = 0; j < NUM_OF_FUNC; j++) {
 		unit_iter = units_addr_arr[j]; // iterate over the 3 functions
@@ -537,14 +537,14 @@ void exec_inst(int cycle, func_unit* units_addr_arr[3]) {
 			station_iter = (unit_iter->reserv_stations) + i; // iterate over reservation stations of that function
 			if (station_iter->cur_inst != NULL) {
 				// if instruction was not executed yet and there is a free unit
-				if (station_iter->cur_inst->cycle_exec_start == -1 && unit_iter->nr_units_busy < unit_iter->nr_units) {
+				if (station_iter->cur_inst->cycle_exec_start == -1 && unit_iter->nr_units_free > 0) {
 					// and if the source registers are ready
 					if (station_iter->qj == NULL && station_iter->qk == NULL) {
 						station_iter->cur_inst->cycle_exec_start = cycle; // execute in this round
-						unit_iter->nr_units_busy++; // mark the unit as busy
+						unit_iter->nr_units_free--; // mark the unit as busy
 					}
 				}
-				else if (station_iter->cur_inst->cycle_exec_start != -1 && station_iter->cur_inst->cycle_exec_end == -1) {
+				if (station_iter->cur_inst->cycle_exec_start != -1 && station_iter->cur_inst->cycle_exec_end == -1) {
 					// check if instruction was executed but not finished yet
 					if (cycle - station_iter->cur_inst->cycle_exec_start + 1 >= unit_iter->delay) {
 						// check if will finish in this cycle
@@ -556,11 +556,11 @@ void exec_inst(int cycle, func_unit* units_addr_arr[3]) {
 	}
 }
 
-void update_stations_cdb(func_unit* units_addr_arr[3], reserv_station* finished_station_addr, float data) {
+void update_stations_cdb(FuncUnit* units_addr_arr[NUM_OF_FUNC], ReservStation* finished_station_addr, float data) {
 	// function to update all stations on cdb
 
-	func_unit* unit_iter = NULL;
-	reserv_station* station_iter = NULL;
+	FuncUnit* unit_iter = NULL;
+	ReservStation* station_iter = NULL;
 
 	for (int j = 0; j < NUM_OF_FUNC; j++) {
 		unit_iter = units_addr_arr[j]; // iterate over the 3 functions
@@ -569,19 +569,21 @@ void update_stations_cdb(func_unit* units_addr_arr[3], reserv_station* finished_
 			station_iter = (unit_iter->reserv_stations) + i;
 			if (station_iter->cur_inst != NULL && station_iter->qj == finished_station_addr) {
 				station_iter->vj = data;
+				station_iter->j_valid = 1;
 			}
 			if (station_iter->cur_inst != NULL && station_iter->qk == finished_station_addr) {
 				station_iter->vk = data;
+				station_iter->k_valid = 1;
 			}
 		}
 	}
 }
 
-void write_cdb(int cycle, func_unit* units_addr_arr[3], FILE* cdb_file) {
+void write_cdb(int cycle, FuncUnit* units_addr_arr[NUM_OF_FUNC], FILE* cdb_file) {
 	// simulating write cdb stage
 
-	func_unit* unit_iter = NULL;
-	reserv_station* station_iter = NULL;
+	FuncUnit* unit_iter = NULL;
+	ReservStation* station_iter = NULL;
 
 	for (int j = 0; j < NUM_OF_FUNC; j++) {
 		unit_iter = units_addr_arr[j]; // iterate over the 3 functions
@@ -605,29 +607,11 @@ void write_cdb(int cycle, func_unit* units_addr_arr[3], FILE* cdb_file) {
 	}
 }
 
-int look_for_busy_station(func_unit* units_addr_arr[3]) {
-	// function checking if there are still instructions that are not finished
-	func_unit* unit_iter = NULL;
-	reserv_station* station_iter = NULL;
-
-	for (int j = 0; j < NUM_OF_FUNC; j++) {
-		func_unit* unit_iter = units_addr_arr[j];
-		for (int i = 0; i < unit_iter->nr_reserv; i++) {
-			// check if an instruction that started previously is finished
-			station_iter = (unit_iter->reserv_stations) + i;
-			if (station_iter->cur_inst != NULL) {
-				return 1;
-			}
-		}
-	}
-	return 0; // return 0 only if all stations are free
-}
-
-void end_cycle(func_unit* units_addr_arr[3]) {
+int end_cycle(int* cycle_addr, FuncUnit* units_addr_arr[NUM_OF_FUNC]) {
 	// set components and data that will be available next cycle to free or valid
-
-	func_unit* cur_unit = NULL;
-	reserv_station* iter = NULL;
+	int inst_count = 0;
+	FuncUnit* cur_unit = NULL;
+	ReservStation* iter = NULL;
 
 	for (int j = 0; j < NUM_OF_FUNC; j++) {
 		cur_unit = units_addr_arr[j]; // iterate over 3 functions
@@ -635,20 +619,21 @@ void end_cycle(func_unit* units_addr_arr[3]) {
 			// iterate over all reservation stations
 			iter = (cur_unit->reserv_stations) + i;
 			if (iter->cur_inst != NULL) {
+				inst_count++;
 				if (iter->cur_inst->cycle_cdb != -1) {
 					// if the station sent data on cdb, station is free from next cycle
 					iter->cur_inst = NULL;
-					iter->vj = -1;
-					iter->vk = -1;
-					cur_unit->nr_units_busy--;
+					cur_unit->nr_units_free++;
 					continue;
 				}
-				// if in a station new data arrived at the cycle, mark it valid for next cycle
-				if (iter->vj != -1 && iter->qj != NULL) {
-					iter->qj = NULL;
+				// if in a station new data arrived at the cycle
+				if (iter->j_valid) {
+					iter->qj = NULL; // mark it valid for next cycle
+					iter->j_valid = 0;
 				}
-				if (iter->vk != -1 && iter->qk != NULL) {
+				if (iter->k_valid) {
 					iter->qk = NULL;
+					iter->k_valid = 0;
 				}
 			}
 		}
@@ -657,13 +642,15 @@ void end_cycle(func_unit* units_addr_arr[3]) {
 			cur_unit->cdb_free = 1;
 		}
 	}
+	*cycle_addr += 1;
+	return inst_count;
 }
 
-void tomasulo(inst_ll* memin_head, func_unit* units_addr_arr[3], FILE* cdb_file) {
+void tomasulo(InstLL* memin_head, FuncUnit* units_addr_arr[NUM_OF_FUNC], FILE* cdb_file) {
 
-	inst_ll* fetched = NULL, * issued = NULL;
+	InstLL* fetched = NULL, * issued = NULL;
 	int cycle = 0, fetch_flag = 1, issue_flag = 1, halt_flag = 0;
-	int inst_q_size = 0;
+	int inst_q_size = 0, temp;
 
 	while (!halt_flag) { // reading intructions		
 		// WRITE CBD
@@ -674,40 +661,40 @@ void tomasulo(inst_ll* memin_head, func_unit* units_addr_arr[3], FILE* cdb_file)
 
 		// ISSUE
 		for (int i = 0; i < 2; i++) { // can issue 2 inst per cycle
-			if (issued != fetched) { // some instructions were fetched but not yet issued
-				inst_q_size -= issue_inst(memin_head, &issued, cycle, &issue_flag, &halt_flag, units_addr_arr);
+			if (issued == fetched) { // all fetched were issued
+				break;
 			}
+			int temp = issue_inst(memin_head, &issued, cycle, &issue_flag, &halt_flag, units_addr_arr);
+			if (temp == 0) break; // nothing to issue in this cycle
+			inst_q_size -= temp;
 		}
 
 		// FETCH
 		for (int i = 0; i < 2; i++) { // can fetch 2 inst per cycle
-			if (inst_q_size < INST_Q_MAX_SIZE && (fetched != NULL || fetch_flag)) {
+			if (inst_q_size == INST_Q_MAX_SIZE || (fetched == NULL && !fetch_flag)) {
 				// fetched = NULL will mark the end of the linked list of instructions, or the first fetch
-				inst_q_size += fetch_inst(memin_head, &fetched, &fetch_flag);
+				break;
 			}
+			inst_q_size += fetch_inst(memin_head, &fetched, &fetch_flag);
 		}
-		end_cycle(units_addr_arr);
-		cycle++;
+		end_cycle(&cycle, units_addr_arr);
 	}
+	// fetch and issued finished, complete all instruction in process
 	while (1) {
-		// fetch and issued finished, complete all instruction in process
-		if (!look_for_busy_station(units_addr_arr)) break;
-
 		// WRITE CBD
 		write_cdb(cycle, units_addr_arr, cdb_file);
 		
 		// EXECUTE
 		exec_inst(cycle, units_addr_arr);
 
-		end_cycle(units_addr_arr);
-		cycle++;
+		if (0 == end_cycle(&cycle, units_addr_arr)) break;
 	}
 }
 
 int main(int argc, char* argv[]) {
-	inst_ll* memin_head = NULL;
-	func_unit add_units, mul_units, div_units;
-	func_unit* units_addr_arr[3] = { &add_units, &mul_units, &div_units };
+	InstLL* memin_head = NULL;
+	FuncUnit add_units, mul_units, div_units;
+	FuncUnit* units_addr_arr[NUM_OF_FUNC] = { &add_units, &mul_units, &div_units };
 	FILE* files_handler[NUM_OF_FILES] = { NULL,NULL,NULL,NULL,NULL };
 
 	// setting simulation

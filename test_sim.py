@@ -2,7 +2,7 @@ import subprocess
 import filecmp
 import os
 
-NUM_OF_TESTS = 5
+NUM_OF_TESTS = 7
 
 def run_c_program(run):
     args_list = [".\sim.exe"]
@@ -22,7 +22,7 @@ def compare_output(run, file_name):
         comparison_result = filecmp.cmp(generated_output_path, predicted_output_path)
         if not comparison_result:
             print(f"Output file {file_name} do not match for run {run}.")
-        os.remove(generated_output_path)
+        #os.remove(generated_output_path) #Optional to delete output files after execution and comparison
     except FileNotFoundError as e:
         if e.filename == generated_output_path:
             print(f"Simulation output file {generated_output_path} not found.")
